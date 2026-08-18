@@ -1,0 +1,69 @@
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from src.models.blocking_reason import BlockingReason
+from src.models.product_moderation import ProductModeration
+
+
+def create_reason(client, code="IMAGE_MISMATCH", hard_block=False):
+    return client.post(
+        "/api/v1/blocking-reasons",
+        json={"code": code, "title": code.replace("_", " "), "hard_block": hard_block},
+    )
+
+
+def test_list_returns_active_reasons_with_required_code(client):
+    created = create_reason(client)
+    assert created.status_code == 201
+    reason = created.json()
+    assert reason["code"] == "IMAGE_MISMATCH"
+
+    listed = client.get("/api/v1/blocking-reasons")
+    assert listed.status_code == 200
+    assert any(item["id"] == reason["id"] and item["code"] == "IMAGE_MISMATCH" for item in listed.json())
+
+
+def test_inactive_reasons_are_hidden_and_patch_is_contract_method(client):
+    reason = create_reason(client, code="BAD_DESCRIPTION").json()
+    updated = client.patch(f"/api/v1/blocking-reasons/{reason['id']}", json={"is_active": False})
+    assert updated.status_code == 200
+    assert updated.json()["is_active"] is False
+
+    listed = client.get("/api/v1/blocking-reasons")
+    assert reason["id"] not in [item["id"] for item in listed.json()]
+
+
+def test_hard_block_filter_and_invalid_code_validation(client):
+    hard_reason = create_reason(client, code="FORBIDDEN_GOODS_FILTER", hard_block=True)
+    assert hard_reason.status_code == 201
+    filtered = client.get("/api/v1/blocking-reasons?hard_block=true")
+    assert all(item["hard_block"] is True for item in filtered.json())
+
+    invalid = client.post(
+        "/api/v1/blocking-reasons", json={"code": "bad-code", "title": "Bad", "hard_block": False}
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "VALIDATION_ERROR"
+
+
+def test_referenced_reason_cannot_be_deactivated(client, db_session):
+    reason = create_reason(client, code="COPYRIGHT").json()
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        ProductModeration(
+            id=str(uuid4()),
+            product_id=str(uuid4()),
+            seller_id=str(uuid4()),
+            status="BLOCKED",
+            queue_priority=1,
+            json_after={"skus": []},
+            blocking_reason_id=reason["id"],
+            date_created=now,
+            date_updated=now,
+        )
+    )
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/blocking-reasons/{reason['id']}")
+    assert response.status_code == 409
+    assert response.json()["code"] == "REFERENCED_REASON"

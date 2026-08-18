@@ -20,3 +20,5 @@ class ProductModeration(Base):
     date_created = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     date_updated = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     date_moderation = Column(DateTime(timezone=True), nullable=True)
+    claimed_at = Column(DateTime(timezone=True), nullable=True)
+    claim_expires_at = Column(DateTime(timezone=True), nullable=True)
