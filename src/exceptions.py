@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -15,6 +16,13 @@ def register_exception_handlers(app: FastAPI):
         return JSONResponse(
             status_code=exc.status_code,
             content={"code": "HTTP_ERROR", "message": str(exc.detail)}
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error_handler(request: Request, exc: RequestValidationError):
+        return JSONResponse(
+            status_code=422,
+            content={"code": "VALIDATION_ERROR", "message": str(exc.errors())}
         )
 
     @app.exception_handler(ValidationError)
