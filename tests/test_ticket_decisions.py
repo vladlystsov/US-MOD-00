@@ -60,7 +60,8 @@ def test_approve_reads_contract_comment_and_emits_moderated_event(client, db_ses
     db_session.refresh(card)
     assert card.moderator_comment == "Looks good"
     assert calls[0][1]["json"]["event_type"] == "MODERATED"
-    assert calls[0][1]["json"]["payload"]["comment"] == "Looks good"
+    assert calls[0][1]["json"]["product_id"] == card.product_id
+    assert calls[0][1]["json"]["moderator_comment"] == "Looks good"
 
 
 def test_approve_others_ticket_returns_contract_409(client, db_session, valid_jwt_with_fixed_id):
@@ -105,7 +106,8 @@ def test_hard_block_reads_comment_and_emits_true_flag(client, db_session, valid_
     db_session.refresh(card)
     assert card.moderator_comment == "Counterfeit"
     assert calls[0][1]["json"]["event_type"] == "BLOCKED"
-    assert calls[0][1]["json"]["payload"]["hard_block"] is True
+    assert calls[0][1]["json"]["blocking_reason_id"] == reason.id
+    assert calls[0][1]["json"]["hard_block"] is True
 
 
 def test_any_modify_on_hard_blocked_returns_403(client, db_session, valid_jwt_with_fixed_id):

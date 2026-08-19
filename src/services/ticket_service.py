@@ -173,23 +173,26 @@ class TicketService:
     @staticmethod
     def _send_to_b2b(event_type: str, ticket: ProductModeration, extra_payload: dict) -> None:
         """Best-effort callback. State is committed before the remote call."""
-        payload = {
-            "product_id": ticket.product_id,
-            "seller_id": ticket.seller_id,
-            **extra_payload,
-        }
         event = {
-            "event_type": event_type,
             "idempotency_key": str(uuid.uuid4()),
+            "product_id": ticket.product_id,
+            "event_type": event_type,
             "occurred_at": datetime.utcnow().isoformat(),
-            "payload": payload,
+            "moderator_id": ticket.moderator_id,
+            "moderator_comment": extra_payload.get("comment"),
+            "blocking_reason_id": ticket.blocking_reason_id or None,
+            "hard_block": extra_payload.get("hard_block", False),
+            "field_reports": [
+                {"field_name": report["field_path"], "comment": report["message"]}
+                for report in extra_payload.get("field_reports", [])
+            ],
         }
         try:
             with httpx.Client() as client:
                 response = client.post(
                     f"{settings.B2B_SERVICE_URL}/api/v1/moderation/events",
                     json=event,
-                    headers={"X-Service-Key": settings.B2B_SERVICE_KEY},
+                    headers={"X-Service-Key": settings.MOD_TO_B2B_KEY},
                     timeout=5.0,
                 )
                 response.raise_for_status()
