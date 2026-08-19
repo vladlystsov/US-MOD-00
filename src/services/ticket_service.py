@@ -78,8 +78,10 @@ class TicketService:
         query = self.db.query(ProductModeration).filter(ProductModeration.status == "PENDING")
         if queue_priority is not None:
             query = query.filter(ProductModeration.queue_priority == queue_priority)
-        # category_ids are snapshot fields. A JSON filter is intentionally avoided
-        # for SQLite portability; unsupported values simply do not narrow the queue.
+        if category_ids:
+            # category_id — часть json_after snapshot и соответствует
+            # необязательному фильтру category_ids в Moderation OpenAPI.
+            query = query.filter(ProductModeration.json_after["category_id"].as_string().in_(category_ids))
         query = query.order_by(ProductModeration.queue_priority.asc(), ProductModeration.date_updated.asc())
         ticket = query.with_for_update(skip_locked=True).first()
         if not ticket:

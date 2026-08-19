@@ -39,7 +39,11 @@ def get_current_admin_id(authorization: Optional[str] = Header(None)) -> str:
     roles = payload.get("roles") or []
     if isinstance(roles, str):
         roles = [roles]
-    is_admin = payload.get("is_admin") is True or payload.get("role") in {"admin", "moderator_admin"} or "admin" in roles
+    normalized_roles = {str(role).lower() for role in roles}
+    normalized_role = str(payload.get("role") or "").lower()
+    # OpenAPI публикует роль ADMIN, а ранние локальные токены использовали
+    # нижний регистр. Поддерживаем оба представления одного контрактного права.
+    is_admin = payload.get("is_admin") is True or normalized_role in {"admin", "moderator_admin"} or "admin" in normalized_roles
     if not is_admin:
         raise HTTPException(
             status_code=403,

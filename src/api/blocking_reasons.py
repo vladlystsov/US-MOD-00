@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from src.database import get_db
-from src.dependencies.moderator_auth import get_current_admin_id
+from src.dependencies.moderator_auth import get_current_admin_id, get_current_moderator_id
 from src.models.blocking_reason import BlockingReason
 from src.models.product_moderation import ProductModeration
 from src.schemas.blocking_reason import (
@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/v1/blocking-reasons", tags=["Blocking Reasons"])
 def list_blocking_reasons(
     hard_block: Optional[bool] = None,
     is_active: bool = True,
+    _: str = Depends(get_current_moderator_id),
     db: Session = Depends(get_db),
 ):
     query = db.query(BlockingReason).filter(BlockingReason.is_active.is_(is_active))
