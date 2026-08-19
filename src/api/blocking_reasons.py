@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from src.database import get_db
+from src.dependencies.moderator_auth import get_current_admin_id, get_current_moderator_id
 from src.models.blocking_reason import BlockingReason
 from src.models.product_moderation import ProductModeration
 from src.schemas.blocking_reason import (
@@ -19,6 +20,7 @@ router = APIRouter(prefix="/api/v1/blocking-reasons", tags=["Blocking Reasons"])
 def list_blocking_reasons(
     hard_block: Optional[bool] = None,
     is_active: bool = True,
+    _: str = Depends(get_current_moderator_id),
     db: Session = Depends(get_db),
 ):
     query = db.query(BlockingReason).filter(BlockingReason.is_active.is_(is_active))
@@ -28,7 +30,11 @@ def list_blocking_reasons(
 
 
 @router.post("", response_model=BlockingReasonResponse, status_code=201)
-def create_blocking_reason(payload: BlockingReasonCreateRequest, db: Session = Depends(get_db)):
+def create_blocking_reason(
+    payload: BlockingReasonCreateRequest,
+    _: str = Depends(get_current_admin_id),
+    db: Session = Depends(get_db),
+):
     existing = db.query(BlockingReason).filter(BlockingReason.code == payload.code).first()
     if existing:
         raise HTTPException(status_code=409, detail={"code": "DUPLICATE_CODE", "message": "Blocking reason code already exists"})
@@ -43,6 +49,7 @@ def create_blocking_reason(payload: BlockingReasonCreateRequest, db: Session = D
 def update_blocking_reason(
     reason_id: str,
     payload: BlockingReasonUpdateRequest,
+    _: str = Depends(get_current_admin_id),
     db: Session = Depends(get_db),
 ):
     reason = db.query(BlockingReason).filter(BlockingReason.id == reason_id).first()
@@ -56,7 +63,11 @@ def update_blocking_reason(
 
 
 @router.delete("/{reason_id}", status_code=204)
-def deactivate_blocking_reason(reason_id: str, db: Session = Depends(get_db)):
+def deactivate_blocking_reason(
+    reason_id: str,
+    _: str = Depends(get_current_admin_id),
+    db: Session = Depends(get_db),
+):
     reason = db.query(BlockingReason).filter(BlockingReason.id == reason_id).first()
     if not reason:
         raise HTTPException(status_code=404, detail={"code": "NOT_FOUND", "message": "Blocking reason not found"})

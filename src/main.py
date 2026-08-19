@@ -10,6 +10,7 @@ Base.metadata.create_all(bind=engine)
 register_exception_handlers(app)
 
 app.include_router(events.router)
+app.include_router(events.b2b_router)
 app.include_router(moderation.router)
 app.include_router(tickets.router)
 app.include_router(blocking_reasons.router)

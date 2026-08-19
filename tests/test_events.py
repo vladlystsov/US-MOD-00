@@ -255,3 +255,31 @@ class TestProductEvents:
             }
         )
         assert response.status_code == 401
+
+
+def test_b2b_event_envelope_deletes_existing_ticket(client, db_session):
+    product_id = str(uuid4())
+    moderation = ProductModeration(
+        id=str(uuid4()),
+        product_id=product_id,
+        seller_id=str(uuid4()),
+        status="PENDING",
+        queue_priority=1,
+        json_after=MOCK_B2B_PRODUCT,
+    )
+    db_session.add(moderation)
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/b2b/events",
+        json={
+            "event_type": "PRODUCT_DELETED",
+            "idempotency_key": str(uuid4()),
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {"product_id": product_id, "seller_id": moderation.seller_id},
+        },
+        headers={"X-Service-Key": settings.B2B_TO_MOD_KEY},
+    )
+
+    assert response.status_code == 202
+    assert db_session.query(ProductModeration).filter(ProductModeration.product_id == product_id).first() is None

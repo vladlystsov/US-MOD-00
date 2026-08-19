@@ -89,6 +89,8 @@ class EventService:
         existing.status = "PENDING"
         existing.queue_priority = queue_priority
         existing.moderator_id = None
+        existing.claimed_at = None
+        existing.claim_expires_at = None
         existing.total_active_quantity = total_active
         existing.date_updated = datetime.utcnow()
 
@@ -114,7 +116,7 @@ class EventService:
             with httpx.Client() as client:
                 response = client.get(
                     f"{settings.B2B_SERVICE_URL}/api/v1/products/{product_id}",
-                    headers={"X-Service-Key": settings.B2B_SERVICE_KEY},
+                    headers={"X-Service-Key": settings.MOD_TO_B2B_KEY},
                     timeout=10.0
                 )
                 response.raise_for_status()

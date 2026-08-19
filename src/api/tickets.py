@@ -25,6 +25,8 @@ def approve_ticket(
         raise HTTPException(status_code=403, detail=result)
     if result.get("code") in {"TICKET_WRONG_STATUS", "TICKET_NOT_ASSIGNED", "NO_SKUS"}:
         raise HTTPException(status_code=409, detail=result)
+    if result.get("code") == "B2B_DELIVERY_FAILED":
+        raise HTTPException(status_code=502, detail=result)
     return result["ticket"]
 
 
@@ -50,4 +52,6 @@ def block_ticket(
         raise HTTPException(status_code=409, detail=result)
     if result.get("code") == "INVALID_BLOCKING_REASON":
         raise HTTPException(status_code=400, detail=result)
+    if result.get("code") == "B2B_DELIVERY_FAILED":
+        raise HTTPException(status_code=502, detail=result)
     return result["ticket"]
