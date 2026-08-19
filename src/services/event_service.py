@@ -89,6 +89,8 @@ class EventService:
         existing.status = "PENDING"
         existing.queue_priority = queue_priority
         existing.moderator_id = None
+        existing.claimed_at = None
+        existing.claim_expires_at = None
         existing.total_active_quantity = total_active
         existing.date_updated = datetime.utcnow()
 

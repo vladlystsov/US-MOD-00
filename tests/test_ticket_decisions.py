@@ -56,7 +56,7 @@ def test_approve_reads_contract_comment_and_emits_moderated_event(client, db_ses
     response = client.post(f"/api/v1/tickets/{card.id}/approve", json={"comment": "Looks good"}, headers=headers(token))
 
     assert response.status_code == 200
-    assert response.json()["status"] == "APPROVED"
+    assert response.json()["status"] == "MODERATED"
     db_session.refresh(card)
     assert card.moderator_comment == "Looks good"
     assert calls[0][1]["json"]["event_type"] == "MODERATED"
@@ -119,3 +119,32 @@ def test_any_modify_on_hard_blocked_returns_403(client, db_session, valid_jwt_wi
 
     response = client.post(f"/api/v1/tickets/{card.id}/approve", headers=headers(token))
     assert response.status_code == 403
+
+
+class _FailingClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def post(self, *_args, **_kwargs):
+        raise RuntimeError("B2B unavailable")
+
+
+def test_approve_delivery_failure_keeps_ticket_in_review(client, db_session, valid_jwt_with_fixed_id, monkeypatch):
+    token, moderator_id = valid_jwt_with_fixed_id
+    card = in_review_ticket(moderator_id)
+    db_session.add(card)
+    db_session.commit()
+    monkeypatch.setattr(ticket_service.httpx, "Client", _FailingClient)
+
+    response = client.post(f"/api/v1/tickets/{card.id}/approve", headers=headers(token))
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "code": "B2B_DELIVERY_FAILED",
+        "message": "B2B moderation event delivery failed; retry the decision",
+    }
+    db_session.refresh(card)
+    assert card.status == "IN_REVIEW"

@@ -43,14 +43,36 @@ class TicketService:
             ProductModeration
         ).filter(ProductModeration.product_id == ticket_id).first()
 
+    def _release_expired_claims(self, now: datetime) -> None:
+        """Return abandoned reviews to PENDING before checking moderator availability."""
+        expired = self.db.query(ProductModeration).filter(
+            ProductModeration.status == "IN_REVIEW",
+            ProductModeration.claim_expires_at.is_not(None),
+            ProductModeration.claim_expires_at <= now,
+        )
+        expired.update(
+            {
+                ProductModeration.status: "PENDING",
+                ProductModeration.moderator_id: None,
+                ProductModeration.claimed_at: None,
+                ProductModeration.claim_expires_at: None,
+                ProductModeration.date_updated: now,
+            },
+            synchronize_session=False,
+        )
+        self.db.flush()
+
     def claim_next(self, moderator_id: str, queue_priority: Optional[int] = None, category_ids: Optional[list[str]] = None) -> dict:
         if queue_priority is not None and queue_priority not in {1, 2, 3, 4}:
             return {"code": "INVALID_QUEUE", "message": "queue_priority must be 1-4"}
 
+        now = datetime.utcnow()
+        self._release_expired_claims(now)
         assigned = self.db.query(ProductModeration).filter(
             ProductModeration.status == "IN_REVIEW", ProductModeration.moderator_id == moderator_id
         ).first()
         if assigned:
+            self.db.rollback()
             return {"code": "MODERATOR_BUSY", "message": "Moderator already has a ticket in review"}
 
         query = self.db.query(ProductModeration).filter(ProductModeration.status == "PENDING")
@@ -58,12 +80,12 @@ class TicketService:
             query = query.filter(ProductModeration.queue_priority == queue_priority)
         # category_ids are snapshot fields. A JSON filter is intentionally avoided
         # for SQLite portability; unsupported values simply do not narrow the queue.
-        query = query.order_by(ProductModeration.queue_priority.asc(), ProductModeration.date_created.asc())
+        query = query.order_by(ProductModeration.queue_priority.asc(), ProductModeration.date_updated.asc())
         ticket = query.with_for_update(skip_locked=True).first()
         if not ticket:
+            self.db.commit()
             return {"status": "empty"}
 
-        now = datetime.utcnow()
         # The status predicate is a second guard for engines where SKIP LOCKED is
         # unsupported or downgraded (e.g. the local SQLite test database).
         updated = self.db.query(ProductModeration).filter(
@@ -99,22 +121,26 @@ class TicketService:
             return {"code": "NO_SKUS", "message": "Product has no SKUs, cannot approve"}
 
         now = datetime.utcnow()
-        ticket.status = "APPROVED"
+        ticket.status = "MODERATED"
         ticket.date_moderation = now
         ticket.date_updated = now
         ticket.moderator_comment = comment
         ticket.blocking_reason_id = None
+        ticket.claimed_at = None
+        ticket.claim_expires_at = None
         self.db.query(ProductModerationFieldReport).filter(
             ProductModerationFieldReport.product_moderation_id == ticket.id
         ).delete()
-        self.db.commit()
+        try:
+            self.db.flush()
+            self._send_to_b2b("MODERATED", ticket, {"comment": comment})
+            self.db.commit()
+        except Exception:
+            # The decision is not final locally until B2B accepted the required
+            # cascade. Rollback preserves IN_REVIEW for an explicit moderator retry.
+            self.db.rollback()
+            return {"code": "B2B_DELIVERY_FAILED", "message": "B2B moderation event delivery failed; retry the decision"}
         self.db.refresh(ticket)
-
-        self._send_to_b2b(
-            "MODERATED",
-            ticket,
-            {"comment": comment},
-        )
         return {"ticket": self._ticket_response(ticket)}
 
     def block(self, ticket_id: str, moderator_id: str, reason_ids: list[str], comment: Optional[str], field_reports: list[dict]) -> dict:
@@ -143,6 +169,8 @@ class TicketService:
         ticket.moderator_comment = comment
         ticket.date_moderation = now
         ticket.date_updated = now
+        ticket.claimed_at = None
+        ticket.claim_expires_at = None
         self.db.query(ProductModerationFieldReport).filter(
             ProductModerationFieldReport.product_moderation_id == ticket.id
         ).delete()
@@ -155,24 +183,27 @@ class TicketService:
                     comment=report["message"],
                 )
             )
-        self.db.commit()
+        try:
+            self.db.flush()
+            self._send_to_b2b(
+                "BLOCKED",
+                ticket,
+                {
+                    "blocking_reason_ids": [reason.id for reason in reasons],
+                    "comment": comment,
+                    "field_reports": field_reports,
+                    "hard_block": hard_block,
+                },
+            )
+            self.db.commit()
+        except Exception:
+            self.db.rollback()
+            return {"code": "B2B_DELIVERY_FAILED", "message": "B2B moderation event delivery failed; retry the decision"}
         self.db.refresh(ticket)
-
-        self._send_to_b2b(
-            "BLOCKED",
-            ticket,
-            {
-                "blocking_reason_ids": [reason.id for reason in reasons],
-                "comment": comment,
-                "field_reports": field_reports,
-                "hard_block": hard_block,
-            },
-        )
         return {"ticket": self._ticket_response(ticket)}
 
     @staticmethod
     def _send_to_b2b(event_type: str, ticket: ProductModeration, extra_payload: dict) -> None:
-        """Best-effort callback. State is committed before the remote call."""
         event = {
             "idempotency_key": str(uuid.uuid4()),
             "product_id": ticket.product_id,
@@ -187,16 +218,11 @@ class TicketService:
                 for report in extra_payload.get("field_reports", [])
             ],
         }
-        try:
-            with httpx.Client() as client:
-                response = client.post(
-                    f"{settings.B2B_SERVICE_URL}/api/v1/moderation/events",
-                    json=event,
-                    headers={"X-Service-Key": settings.MOD_TO_B2B_KEY},
-                    timeout=5.0,
-                )
-                response.raise_for_status()
-        except Exception:
-            # The state-machine contract must not roll back a completed decision
-            # because the companion service is temporarily unreachable.
-            return None
+        with httpx.Client() as client:
+            response = client.post(
+                f"{settings.B2B_SERVICE_URL}/api/v1/moderation/events",
+                json=event,
+                headers={"X-Service-Key": settings.MOD_TO_B2B_KEY},
+                timeout=5.0,
+            )
+            response.raise_for_status()

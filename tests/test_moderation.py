@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from src.models.product_moderation import ProductModeration
@@ -69,6 +69,22 @@ def test_autoprioritization_uses_priority_then_fifo(client, db_session, valid_jw
     response = client.post("/api/v1/queue/claim", headers=moderator_headers(valid_jwt))
     assert response.status_code == 200
     assert response.json()["product_id"] == "product-1"
+
+
+def test_expired_claim_is_returned_to_pending_and_can_be_reclaimed(client, db_session, valid_jwt_with_fixed_id):
+    token, moderator_id = valid_jwt_with_fixed_id
+    expired = ticket("expired", 1, datetime(2026, 1, 1, tzinfo=timezone.utc), "IN_REVIEW", moderator_id)
+    expired.claimed_at = datetime.utcnow() - timedelta(hours=1)
+    expired.claim_expires_at = datetime.utcnow() - timedelta(minutes=1)
+    db_session.add(expired)
+    db_session.commit()
+
+    response = client.post("/api/v1/queue/claim", headers=moderator_headers(token))
+
+    assert response.status_code == 200
+    assert response.json()["id"] == expired.id
+    assert response.json()["status"] == "IN_REVIEW"
+    assert response.json()["assigned_moderator_id"] == moderator_id
 
 
 def test_moderator_already_has_in_review_returns_409(client, db_session, valid_jwt_with_fixed_id):
