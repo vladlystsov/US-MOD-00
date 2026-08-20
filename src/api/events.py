@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy.orm import Session
 
 from src.database import get_db
@@ -35,12 +35,18 @@ def handle_b2b_product_event(
         "DELETED": "DELETED",
     }
     payload = event.payload
-    EventService(db).handle_product_event(
+    result = EventService(db).handle_product_event(
         {
             "product_id": payload.get("product_id"),
             "seller_id": payload.get("seller_id", ""),
             "event": event_map[event.event_type],
             "date": event.occurred_at,
+            "idempotency_key": event.idempotency_key,
         }
     )
+    if result.get("status") == "duplicate":
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "DUPLICATE_EVENT", "message": "B2B event has already been processed"},
+        )
     return Response(status_code=202)

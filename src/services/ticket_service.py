@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timedelta
 from typing import Optional
@@ -123,7 +124,9 @@ class TicketService:
             return {"code": "NO_SKUS", "message": "Product has no SKUs, cannot approve"}
 
         now = datetime.utcnow()
-        ticket.status = "MODERATED"
+        # TicketResponse is governed by Moderation OpenAPI, where the approved
+        # terminal state is APPROVED. The outgoing B2B event remains MODERATED.
+        ticket.status = "APPROVED"
         ticket.date_moderation = now
         ticket.date_updated = now
         ticket.moderator_comment = comment
@@ -206,8 +209,20 @@ class TicketService:
 
     @staticmethod
     def _send_to_b2b(event_type: str, ticket: ProductModeration, extra_payload: dict) -> None:
+        decision_identity = json.dumps(
+            {
+                "ticket_id": ticket.id,
+                "event_type": event_type,
+                "comment": extra_payload.get("comment"),
+                "blocking_reason_id": ticket.blocking_reason_id,
+                "hard_block": extra_payload.get("hard_block", False),
+                "field_reports": extra_payload.get("field_reports", []),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         event = {
-            "idempotency_key": str(uuid.uuid4()),
+            "idempotency_key": str(uuid.uuid5(uuid.NAMESPACE_URL, decision_identity)),
             "product_id": ticket.product_id,
             "event_type": event_type,
             "occurred_at": datetime.utcnow().isoformat(),
