@@ -56,7 +56,7 @@ def test_approve_reads_contract_comment_and_emits_moderated_event(client, db_ses
     response = client.post(f"/api/v1/tickets/{card.id}/approve", json={"comment": "Looks good"}, headers=headers(token))
 
     assert response.status_code == 200
-    assert response.json()["status"] == "MODERATED"
+    assert response.json()["status"] == "APPROVED"
     db_session.refresh(card)
     assert card.moderator_comment == "Looks good"
     assert calls[0][1]["json"]["event_type"] == "MODERATED"

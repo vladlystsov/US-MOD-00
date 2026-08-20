@@ -283,3 +283,51 @@ def test_b2b_event_envelope_deletes_existing_ticket(client, db_session):
 
     assert response.status_code == 202
     assert db_session.query(ProductModeration).filter(ProductModeration.product_id == product_id).first() is None
+
+
+@patch('src.services.event_service.httpx.Client')
+def test_duplicate_b2b_envelope_preserves_reclaimed_ticket(MockClient, client, db_session):
+    product_id = str(uuid4())
+    moderator_id = str(uuid4())
+    ticket = ProductModeration(
+        id=str(uuid4()),
+        product_id=product_id,
+        seller_id=str(uuid4()),
+        status="IN_REVIEW",
+        queue_priority=1,
+        moderator_id=moderator_id,
+        json_after=MOCK_B2B_PRODUCT,
+    )
+    db_session.add(ticket)
+    db_session.commit()
+
+    response = MagicMock()
+    response.json.return_value = MOCK_B2B_PRODUCT
+    response.raise_for_status = MagicMock()
+    http_client = MagicMock()
+    http_client.get.return_value = response
+    http_client.__enter__.return_value = http_client
+    http_client.__exit__.return_value = False
+    MockClient.return_value = http_client
+
+    event = {
+        "event_type": "PRODUCT_EDITED",
+        "idempotency_key": str(uuid4()),
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "payload": {"product_id": product_id, "seller_id": ticket.seller_id},
+    }
+    headers = {"X-Service-Key": settings.B2B_TO_MOD_KEY}
+
+    first = client.post("/api/v1/b2b/events", json=event, headers=headers)
+    assert first.status_code == 202
+    db_session.refresh(ticket)
+    ticket.status = "IN_REVIEW"
+    ticket.moderator_id = moderator_id
+    db_session.commit()
+
+    duplicate = client.post("/api/v1/b2b/events", json=event, headers=headers)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["code"] == "DUPLICATE_EVENT"
+    db_session.refresh(ticket)
+    assert ticket.status == "IN_REVIEW"
+    assert ticket.moderator_id == moderator_id
