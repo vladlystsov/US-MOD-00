@@ -1,10 +1,11 @@
 import pytest
 from uuid import uuid4
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 import httpx
 
 from src.models.product_moderation import ProductModeration
+from src.models.processed_b2b_event import ProcessedB2BEvent
 from src.config import settings
 
 
@@ -331,3 +332,58 @@ def test_duplicate_b2b_envelope_preserves_reclaimed_ticket(MockClient, client, d
     db_session.refresh(ticket)
     assert ticket.status == "IN_REVIEW"
     assert ticket.moderator_id == moderator_id
+
+
+@patch("src.services.event_service.httpx.Client")
+def test_b2b_event_read_failure_returns_503_without_consuming_idempotency_key(MockClient, client, db_session):
+    product_id = str(uuid4())
+    idempotency_key = str(uuid4())
+    http_client = MagicMock()
+    http_client.get.side_effect = RuntimeError("B2B unavailable")
+    http_client.__enter__.return_value = http_client
+    http_client.__exit__.return_value = False
+    MockClient.return_value = http_client
+
+    response = client.post(
+        "/api/v1/b2b/events",
+        json={
+            "event_type": "PRODUCT_CREATED",
+            "idempotency_key": idempotency_key,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {"product_id": product_id, "seller_id": str(uuid4())},
+        },
+        headers={"X-Service-Key": settings.B2B_TO_MOD_KEY},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "B2B_UNAVAILABLE"
+    assert db_session.query(ProductModeration).filter(ProductModeration.product_id == product_id).first() is None
+    assert db_session.get(ProcessedB2BEvent, idempotency_key) is None
+
+
+def test_expired_b2b_event_key_can_be_delivered_again(client, db_session):
+    event_key = str(uuid4())
+    db_session.add(
+        ProcessedB2BEvent(
+            idempotency_key=event_key,
+            event_type="DELETED",
+            product_id=str(uuid4()),
+            created_at=datetime.utcnow() - timedelta(hours=25),
+        )
+    )
+    db_session.commit()
+
+    response = client.post(
+        "/api/v1/b2b/events",
+        json={
+            "event_type": "PRODUCT_DELETED",
+            "idempotency_key": event_key,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "payload": {"product_id": str(uuid4()), "seller_id": str(uuid4())},
+        },
+        headers={"X-Service-Key": settings.B2B_TO_MOD_KEY},
+    )
+
+    assert response.status_code == 202
+    receipt = db_session.get(ProcessedB2BEvent, event_key)
+    assert receipt.created_at > datetime.utcnow() - timedelta(hours=24)
