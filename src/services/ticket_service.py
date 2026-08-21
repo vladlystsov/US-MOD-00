@@ -44,6 +44,21 @@ class TicketService:
             ProductModeration
         ).filter(ProductModeration.product_id == ticket_id).first()
 
+    @staticmethod
+    def _fetch_current_product(product_id: str) -> dict | None:
+        """Load the current B2B product rather than approving a stale ticket snapshot."""
+        try:
+            with httpx.Client() as client:
+                response = client.get(
+                    f"{settings.B2B_SERVICE_URL}/api/v1/products/{product_id}",
+                    headers={"X-Service-Key": settings.MOD_TO_B2B_KEY},
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                return response.json()
+        except Exception:
+            return None
+
     def _release_expired_claims(self, now: datetime) -> None:
         """Return abandoned reviews to PENDING before checking moderator availability."""
         expired = self.db.query(ProductModeration).filter(
@@ -115,13 +130,19 @@ class TicketService:
         if not ticket:
             return {"code": "NOT_FOUND", "message": "Ticket not found"}
         if ticket.status == "HARD_BLOCKED":
-            return {"code": "FORBIDDEN", "message": "Cannot modify a hard-blocked ticket"}
+            return {"code": "TICKET_WRONG_STATUS", "message": "Ticket is hard blocked and cannot be approved"}
         if ticket.status != "IN_REVIEW":
             return {"code": "TICKET_WRONG_STATUS", "message": "Ticket is not in review"}
         if ticket.moderator_id != moderator_id:
             return {"code": "TICKET_NOT_ASSIGNED", "message": "Ticket is assigned to another moderator"}
         if not (ticket.json_after or {}).get("skus"):
             return {"code": "NO_SKUS", "message": "Product has no SKUs, cannot approve"}
+
+        current_product = self._fetch_current_product(ticket.product_id)
+        if current_product is None:
+            return {"code": "B2B_UNAVAILABLE", "message": "Could not load current product from B2B"}
+        if not current_product.get("skus"):
+            return {"code": "NO_SKUS", "message": "Product has no current SKUs, cannot approve"}
 
         now = datetime.utcnow()
         # TicketResponse is governed by Moderation OpenAPI, where the approved

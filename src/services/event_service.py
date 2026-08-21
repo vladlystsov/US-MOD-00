@@ -5,8 +5,11 @@ from src.models.product_moderation import ProductModeration
 from src.models.field_report import ProductModerationFieldReport
 import httpx
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from src.config import settings
+
+
+INBOUND_IDEMPOTENCY_TTL = timedelta(hours=24)
 
 
 class EventService:
@@ -21,7 +24,12 @@ class EventService:
 
         # The insert is flushed before touching the ticket. A unique key is the
         # concurrency guard for replayed deliveries of the same B2B envelope.
+        # The receipt is kept for exactly the contractually required 24 hours.
         if idempotency_key:
+            now = datetime.utcnow()
+            self.db.query(ProcessedB2BEvent).filter(
+                ProcessedB2BEvent.created_at <= now - INBOUND_IDEMPOTENCY_TTL
+            ).delete(synchronize_session=False)
             try:
                 self.db.add(
                     ProcessedB2BEvent(

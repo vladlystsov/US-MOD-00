@@ -7,8 +7,14 @@ from src.services import ticket_service
 
 
 class _Response:
+    def __init__(self, payload=None):
+        self.payload = payload or {}
+
     def raise_for_status(self):
         return None
+
+    def json(self):
+        return self.payload
 
 
 class _Client:
@@ -20,6 +26,9 @@ class _Client:
 
     def __exit__(self, *_):
         return False
+
+    def get(self, _url, **_kwargs):
+        return _Response({"skus": [{"id": "current-sku"}]})
 
     def post(self, url, **kwargs):
         self.calls.append((url, kwargs))
@@ -118,7 +127,8 @@ def test_any_modify_on_hard_blocked_returns_403(client, db_session, valid_jwt_wi
     db_session.commit()
 
     response = client.post(f"/api/v1/tickets/{card.id}/approve", headers=headers(token))
-    assert response.status_code == 403
+    assert response.status_code == 409
+    assert response.json()["code"] == "TICKET_WRONG_STATUS"
 
 
 class _FailingClient:
@@ -127,6 +137,9 @@ class _FailingClient:
 
     def __exit__(self, *_):
         return False
+
+    def get(self, *_args, **_kwargs):
+        return _Response({"skus": [{"id": "current-sku"}]})
 
     def post(self, *_args, **_kwargs):
         raise RuntimeError("B2B unavailable")
@@ -146,5 +159,31 @@ def test_approve_delivery_failure_keeps_ticket_in_review(client, db_session, val
         "code": "B2B_DELIVERY_FAILED",
         "message": "B2B moderation event delivery failed; retry the decision",
     }
+    db_session.refresh(card)
+    assert card.status == "IN_REVIEW"
+
+
+class _NoSkuCurrentProductClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def get(self, *_args, **_kwargs):
+        return _Response({"skus": []})
+
+
+def test_approve_rejects_ticket_when_current_b2b_product_has_no_skus(client, db_session, valid_jwt_with_fixed_id, monkeypatch):
+    token, moderator_id = valid_jwt_with_fixed_id
+    card = in_review_ticket(moderator_id, skus=True)
+    db_session.add(card)
+    db_session.commit()
+    monkeypatch.setattr(ticket_service.httpx, "Client", _NoSkuCurrentProductClient)
+
+    response = client.post(f"/api/v1/tickets/{card.id}/approve", headers=headers(token))
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "NO_SKUS"
     db_session.refresh(card)
     assert card.status == "IN_REVIEW"

@@ -49,4 +49,11 @@ def handle_b2b_product_event(
             status_code=409,
             detail={"code": "DUPLICATE_EVENT", "message": "B2B event has already been processed"},
         )
+    if result.get("status") == "b2b_error":
+        # EventService has rolled back both ticket work and the idempotency receipt.
+        # A non-2xx response keeps the envelope eligible for B2B retry.
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "B2B_UNAVAILABLE", "message": "Could not load current product from B2B; retry delivery"},
+        )
     return Response(status_code=202)
